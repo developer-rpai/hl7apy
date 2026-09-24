@@ -29,7 +29,7 @@ import tempfile
 import unittest
 
 import hl7apy
-from hl7apy.core import Group, Field, Component, SubComponent
+from hl7apy.core import Group, Field, Component, SubComponent, Segment
 from hl7apy.exceptions import ValidationError
 from hl7apy.parser import parse_message, parse_segments, parse_segment, parse_field
 from hl7apy.validation import VALIDATION_LEVEL
@@ -86,6 +86,12 @@ class TestValidation(unittest.TestCase):
         report_file = tempfile.NamedTemporaryFile()
         self.report_file = report_file.name
 
+        self.orm_o01 = \
+            'MSH|^~\\&|SND|SND|RCV|RCV|20260101120000||ORM^O01|MSG001|P|2.3\r' \
+            'PID|1||12345||DOE^JOHN|||19800101|M\r' \
+            'ORC|NW||||||1^^^20260101120000|20260101120000\r' \
+            'OBR|1|||SPEC-001|PANEL|||20260101090000|||||||CSF||||||||||||1^^^20260101120000\r'
+
     def _create_message(self, msg_str):
         return parse_message(msg_str)
 
@@ -109,6 +115,52 @@ class TestValidation(unittest.TestCase):
         for msg_str in (self.adt_a01, self.oml_o33):
             msg = self._create_message(msg_str)
             self.assertTrue(msg.validate())
+
+    def test_choice_group_with_single_alternative(self):
+        """
+        Tests that a choice group with exactly one of its alternatives present is validated.
+        Regression test for https://github.com/crs4/hl7apy/issues/151
+        The ORM_O01_CHOICE group is a choice group: OBR alone must satisfy it.
+        """
+        msg = parse_message(self.orm_o01, find_groups=True)
+        self.assertTrue(msg.validate())
+
+    def test_choice_group_with_multiple_alternatives(self):
+        """
+        Tests that a choice group with more than one alternative present is not validated
+        """
+        msg = parse_message(self.orm_o01, find_groups=True)
+        choice = msg.orm_o01_order.orm_o01_order_detail.orm_o01_choice
+        rqd = Segment('RQD', version='2.3')
+        rqd.rqd_1 = 'X'
+        choice.add(rqd)
+        self.assertRaises(ValidationError, msg.validate, report_file=self.report_file)
+        self._test_report_file('ERROR')
+
+    def test_choice_group_with_no_alternatives(self):
+        """
+        Tests that an empty choice group is not validated
+        """
+        msg = parse_message(self.orm_o01, find_groups=True)
+        detail = msg.orm_o01_order.orm_o01_order_detail
+        del detail.orm_o01_choice
+        empty_choice = Group('ORM_O01_CHOICE', version='2.3')
+        detail.add(empty_choice)
+        self.assertRaises(ValidationError, msg.validate, report_file=self.report_file)
+        self._test_report_file('ERROR')
+
+    def test_choice_group_with_repeated_alternative(self):
+        """
+        Tests that a choice group whose chosen alternative exceeds its maximum
+        repetitions is not validated
+        """
+        msg = parse_message(self.orm_o01, find_groups=True)
+        choice = msg.orm_o01_order.orm_o01_order_detail.orm_o01_choice
+        obr = Segment('OBR', version='2.3')
+        obr.obr_1 = '2'
+        choice.add(obr)
+        self.assertRaises(ValidationError, msg.validate, report_file=self.report_file)
+        self._test_report_file('ERROR')
 
     # def test_oml_o33_2_message(self):
     #     # This test is failing because the oml_o33_2 parsing creates a
