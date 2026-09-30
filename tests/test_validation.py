@@ -30,7 +30,7 @@ import unittest
 
 import hl7apy
 from hl7apy.core import Group, Field, Component, SubComponent, Segment
-from hl7apy.exceptions import ValidationError
+from hl7apy.exceptions import ValidationError, ChildNotFound
 from hl7apy.parser import parse_message, parse_segments, parse_segment, parse_field
 from hl7apy.validation import VALIDATION_LEVEL
 
@@ -146,6 +146,58 @@ class TestValidation(unittest.TestCase):
         del detail.orm_o01_choice
         empty_choice = Group('ORM_O01_CHOICE', version='2.3')
         detail.add(empty_choice)
+        self.assertRaises(ValidationError, msg.validate, report_file=self.report_file)
+        self._test_report_file('ERROR')
+
+    def test_mislabeled_choice_groups_are_sequences(self):
+        """
+        The 16 groups below were labeled 'choice' in the version tables but the
+        HL7 standard defines them as ordered sequences (no vertical bars between
+        alternatives in the abstract message syntax, e.g. ``QAK QPD`` rather than
+        ``<QAK|QPD>``). They must be labeled 'sequence' so the validator does not
+        reject valid messages carrying several of their children.
+        Regression test for https://github.com/crs4/hl7apy/pull/152#issuecomment (wshallwshall)
+        """
+        groups = ('EHC_E01_INVOICE_INFORMATION', 'EHC_E01_INVOICE_INFORMATION_SUBMIT',
+                  'EHC_E02_INVOICE_INFORMATION', 'EHC_E02_INVOICE_INFORMATION_CANCEL',
+                  'EHC_E04_REASSESSMENT_REQUEST_INFO', 'EHC_E15_PAYMENT_REMITTANCE_HEADER_INFO',
+                  'EHC_E20_AUTHORIZATION_REQUEST', 'EHC_E21_AUTHORIZATION_REQUEST',
+                  'EHC_E24_AUTHORIZATION_RESPONSE_INFO', 'QBP_E03_QUERY_INFORMATION',
+                  'QBP_E22_QUERY', 'RSP_E03_QUERY_ACK', 'RSP_E03_QUERY_ACK_IPR',
+                  'RSP_E22_QUERY_ACK', 'SDR_S31_ANTI_MICROBIAL_DEVICE_DATA',
+                  'SDR_S32_ANTI_MICROBIAL_DEVICE_CYCLE_DATA')
+        checked = 0
+        for version in ('2.6', '2.7', '2.8', '2.8.1', '2.8.2'):
+            for name in groups:
+                try:
+                    ref = hl7apy.load_reference(name, 'Group', version)
+                except ChildNotFound:
+                    continue
+                self.assertEqual(ref[0], 'sequence',
+                                 '{} should be a sequence in v{}'.format(name, version))
+                checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_rsp_e22_query_ack_validates_as_sequence(self):
+        """
+        A valid RSP^E22 carrying QAK then QPD must validate: RSP_E22_QUERY_ACK
+        is an ordered sequence, not a choice group.
+        """
+        msg_str = 'MSH|^~\\&|SND|SND|RCV|RCV|20260101120000||RSP^E22^RSP_E22|MSG001|P|2.6\r' \
+                  'MSA|AA|123\r' \
+                  'QAK|QRY001|OK\r' \
+                  'QPD|QRY001|QueryName\r'
+        msg = parse_message(msg_str, find_groups=True)
+        self.assertTrue(msg.validate())
+
+    def test_rsp_e22_query_ack_enforces_sequence_cardinality(self):
+        """
+        Sequence semantics still apply: QPD without the required QAK must fail.
+        """
+        msg_str = 'MSH|^~\\&|SND|SND|RCV|RCV|20260101120000||RSP^E22^RSP_E22|MSG001|P|2.6\r' \
+                  'MSA|AA|123\r' \
+                  'QPD|QRY001|QueryName\r'
+        msg = parse_message(msg_str, find_groups=True)
         self.assertRaises(ValidationError, msg.validate, report_file=self.report_file)
         self._test_report_file('ERROR')
 
